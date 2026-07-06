@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="上传图片，自动识别内容并批量改名。" />
+  <title>识图改名</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <main class="app-shell">
+    <header class="hero">
+      <div class="brand-mark" aria-hidden="true">名</div>
+      <div>
+        <h1>识图改名</h1>
+        <p>上传图片，AI 自动识别内容并生成文件名。</p>
+      </div>
+    </header>
+
+    <section id="dropZone" class="drop-zone" tabindex="0" role="button" aria-label="选择或拖入图片">
+      <input id="fileInput" type="file" accept="image/jpeg,image/png,image/webp" multiple hidden />
+      <div class="upload-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="34" height="34"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 15.5v2A2.5 2.5 0 0 0 7.5 20h9a2.5 2.5 0 0 0 2.5-2.5v-2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <strong>点击选择或拖入图片</strong>
+      <span>支持 JPG、PNG、WEBP，单次最多 30 张</span>
+    </section>
+
+    <section id="workspace" class="workspace hidden" aria-live="polite">
+      <div class="toolbar">
+        <div class="summary"><b id="fileCount">0</b> 张图片</div>
+        <div class="toolbar-actions">
+          <button id="clearBtn" class="button ghost" type="button">清空</button>
+          <button id="recognizeBtn" class="button primary" type="button">开始识图改名</button>
+          <button id="downloadBtn" class="button success" type="button" disabled>下载全部</button>
+        </div>
+      </div>
+
+      <div id="globalMessage" class="global-message hidden"></div>
+      <div id="fileList" class="file-list"></div>
+    </section>
+  </main>
+
+  <template id="rowTemplate">
+    <article class="file-row">
+      <img class="thumb" alt="图片预览" />
+      <div class="file-meta">
+        <div class="original-name"></div>
+        <div class="file-size"></div>
+      </div>
+      <div class="rename-field">
+        <label>新文件名</label>
+        <div class="input-wrap">
+          <input class="name-input" type="text" maxlength="60" placeholder="等待识别…" />
+          <span class="extension"></span>
+        </div>
+        <div class="row-status">等待识别</div>
+      </div>
+      <button class="remove-btn" type="button" aria-label="删除这张图片">×</button>
+    </article>
+  </template>
+
+  <script src="/vendor/jszip.min.js"></script>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
