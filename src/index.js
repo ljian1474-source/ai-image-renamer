@@ -115,32 +115,44 @@ async function handleRename(request, env) {
     }
 
     reservationActive = true;
-    const prompt = buildPrompt(originalName, options);
+    let name = "";
+    let previousName = "";
 
-    const result = await env.AI.run(MODEL, {
-      messages: [
-        {
-          role: "system",
-          content: "你是一个严谨的电商图片文件命名助手。必须只返回一个简短文件名。",
-        },
-        {
-          role: "user",
-          content: [
-            { type: "text", text: prompt },
-            { type: "image_url", image_url: { url: image } },
-          ],
-        },
-      ],
-      max_tokens: 80,
-      temperature: 0.1,
-    });
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const prompt = buildPrompt(originalName, options, previousName);
+      const result = await env.AI.run(MODEL, {
+        messages: [
+          {
+            role: "system",
+            content: "你是一个严谨的电商图片文件命名助手。必须只返回一个符合字数范围的文件名。",
+          },
+          {
+            role: "user",
+            content: [
+              { type: "text", text: prompt },
+              { type: "image_url", image_url: { url: image } },
+            ],
+          },
+        ],
+        max_tokens: 100,
+        temperature: 0.1,
+      });
 
-    const raw = extractText(result);
-    const name = sanitizeStem(raw, options);
+      previousName = sanitizeStem(extractText(result), options);
+      if (isNameWithinOptions(previousName, options)) {
+        name = previousName;
+        break;
+      }
+    }
+
     if (!name) {
       await quotaStub(env).release(day, 1);
       reservationActive = false;
-      return json({ ok: false, error: "AI没有返回有效名称，请重试", quota: await quotaStub(env).getUsage(day) }, 502);
+      return json({
+        ok: false,
+        error: `AI生成的名称未达到 ${options.minLength}-${options.maxLength} 字，请重试`,
+        quota: await quotaStub(env).getUsage(day),
+      }, 502);
     }
 
     reservationActive = false;
@@ -183,38 +195,50 @@ async function handleRename(request, env) {
 }
 
 function normalizeOptions(options) {
-  const nameLength = Math.max(2, Math.min(30, Math.trunc(Number(options?.nameLength) || 8)));
+  let minLength = clampLength(options?.minLength, 4);
+  let maxLength = clampLength(options?.maxLength ?? options?.nameLength, 8);
+  if (minLength > maxLength) maxLength = minLength;
   return {
-    nameLength,
+    minLength,
+    maxLength,
     allowSymbols: Boolean(options?.allowSymbols),
     allowEnglish: Boolean(options?.allowEnglish),
   };
 }
 
-function buildPrompt(originalName, options) {
+function clampLength(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(2, Math.min(30, Math.trunc(number))) : fallback;
+}
+
+function buildPrompt(originalName, options, previousName = "") {
   const lines = [
     "请识别这张图片，并为它生成一个适合作为文件名的名称。",
     "命名规则：",
     "1. 只输出文件名主体，不要扩展名，不要解释，不要引号。",
     "2. 优先写清楚核心物品，再补充颜色、角度、数量或使用场景。",
-    `3. 文件名主体最多 ${options.nameLength} 个字或字符，扩展名不计算在内。`,
-    "4. 不猜测看不清的品牌、型号、材质或功能。",
-    "5. 不使用斜杠、冒号、星号、问号、引号、尖括号、竖线等文件名非法字符。",
-    "6. 不使用‘图片’‘照片’‘实拍图’等空泛结尾。",
+    `3. 文件名主体必须不少于 ${options.minLength} 个字或字符，并且不得超过 ${options.maxLength} 个字或字符；扩展名不计算在内。`,
+    `4. 必须严格控制在 ${options.minLength}-${options.maxLength} 字之间，少于最低字数时补充颜色、外形、用途、角度或场景等真实可见信息。`,
+    "5. 不猜测看不清的品牌、型号、材质或功能。",
+    "6. 不使用斜杠、冒号、星号、问号、引号、尖括号、竖线等文件名非法字符。",
+    "7. 不使用‘图片’‘照片’‘实拍图’等空泛结尾。",
   ];
 
   if (options.allowEnglish) {
-    lines.push("7. 允许使用英文；当产品本身以英文更自然时，可以保留少量英文或字母。");
+    lines.push("8. 允许使用英文；当产品本身以英文更自然时，可以保留少量英文或字母。");
   } else {
-    lines.push("7. 不要输出英文、拼音或纯字母缩写，优先使用简体中文。");
+    lines.push("8. 不要输出英文、拼音或纯字母缩写，优先使用简体中文。");
   }
 
   if (options.allowSymbols) {
-    lines.push("8. 允许在必要时使用少量普通符号，例如短横线或下划线；但仍不要使用 Windows 非法字符。");
+    lines.push("9. 允许在必要时使用少量普通符号，例如短横线或下划线；但仍不要使用 Windows 非法字符。");
   } else {
-    lines.push("8. 不要使用任何符号，只保留中文、英文或数字本身。空格也尽量不要出现。");
+    lines.push("9. 不要使用任何符号，只保留中文、英文或数字本身。空格也尽量不要出现。");
   }
 
+  if (previousName) {
+    lines.push(`上一次名称“${previousName}”没有达到字数范围，请在不捏造信息的前提下重新生成。`);
+  }
   if (originalName) lines.push(`原文件名仅供参考：${originalName}`);
   return lines.join("\n");
 }
@@ -294,11 +318,16 @@ function sanitizeStem(value, options = {}) {
   }
 
   const chars = Array.from(text);
-  if (chars.length > options.nameLength) {
-    text = chars.slice(0, options.nameLength).join("");
+  if (chars.length > options.maxLength) {
+    text = chars.slice(0, options.maxLength).join("");
   }
 
   return text.slice(0, 60);
+}
+
+function isNameWithinOptions(value, options) {
+  const length = Array.from(String(value || "")).length;
+  return length >= options.minLength && length <= options.maxLength;
 }
 
 function json(data, status = 200) {
