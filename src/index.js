@@ -2,9 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 
 const MODEL = "@cf/meta/llama-4-scout-17b-16e-instruct";
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
-const FREE_DAILY_NEURONS = 10_000;
-const INPUT_NEURONS_PER_MILLION_TOKENS = 24_545;
-const OUTPUT_NEURONS_PER_MILLION_TOKENS = 77_273;
+const FREE_DAILY_IMAGES = 1000;
 const QUOTA_OBJECT_NAME = "workers-ai-daily-quota";
 
 export class QuotaCounter extends DurableObject {
@@ -13,22 +11,25 @@ export class QuotaCounter extends DurableObject {
     return quotaPayload(normalizeStoredQuota(stored, day));
   }
 
-  async addUsage(day, neurons, images = 1) {
+  async tryConsume(day, images = 1) {
     return this.ctx.storage.transaction(async (txn) => {
       const key = quotaKey(day);
       const current = normalizeStoredQuota(await txn.get(key), day);
-      current.used = roundNeurons(current.used + positiveNumber(neurons));
-      current.images += Math.max(0, Math.trunc(Number(images) || 0));
+      const count = Math.max(1, Math.trunc(Number(images) || 1));
+      if (current.images + count > FREE_DAILY_IMAGES) {
+        return { allowed: false, quota: quotaPayload(current) };
+      }
+      current.images += count;
       await txn.put(key, current);
-      return quotaPayload(current);
+      return { allowed: true, quota: quotaPayload(current) };
     });
   }
 
-  async markExhausted(day) {
+  async release(day, images = 1) {
     return this.ctx.storage.transaction(async (txn) => {
       const key = quotaKey(day);
       const current = normalizeStoredQuota(await txn.get(key), day);
-      current.used = Math.max(current.used, FREE_DAILY_NEURONS);
+      current.images = Math.max(0, current.images - Math.max(1, Math.trunc(Number(images) || 1)));
       await txn.put(key, current);
       return quotaPayload(current);
     });
@@ -74,6 +75,8 @@ async function handleQuota(env) {
 }
 
 async function handleRename(request, env) {
+  let reservationActive = false;
+  let reservationDay = "";
   try {
     const contentLength = Number(request.headers.get("content-length") || 0);
     if (contentLength > MAX_BODY_BYTES) {
@@ -89,6 +92,7 @@ async function handleRename(request, env) {
 
     const image = typeof body?.image === "string" ? body.image : "";
     const originalName = typeof body?.originalName === "string" ? body.originalName : "";
+    const options = normalizeOptions(body?.options);
 
     if (!/^data:image\/(jpeg|jpg|png|webp);base64,/i.test(image)) {
       return json({ ok: false, error: "只支持 JPG、PNG、WEBP 图片" }, 400);
@@ -98,17 +102,20 @@ async function handleRename(request, env) {
       return json({ ok: false, error: "图片预览过大，请换一张较小的图片" }, 413);
     }
 
-    const prompt = [
-      "请识别这张图片，并为它生成一个适合作为文件名的简体中文名称。",
-      "命名规则：",
-      "1. 只输出文件名主体，不要扩展名，不要解释，不要引号。",
-      "2. 优先写清楚核心物品，再补充颜色、角度、数量或使用场景。",
-      "3. 长度控制在6到24个字符，简洁、准确、自然。",
-      "4. 不猜测看不清的品牌、型号、材质或功能。",
-      "5. 不使用斜杠、冒号、星号、问号、引号、尖括号、竖线等文件名非法字符。",
-      "6. 不使用‘图片’‘照片’‘实拍图’等空泛结尾。",
-      originalName ? `原文件名仅供参考：${originalName}` : "",
-    ].filter(Boolean).join("\n");
+    const day = utcDayKey();
+    reservationDay = day;
+    const reservation = await quotaStub(env).tryConsume(day, 1);
+    if (!reservation.allowed) {
+      return json({
+        ok: false,
+        code: "CUSTOM_QUOTA_EXHAUSTED",
+        error: "今天的图片额度已用完，请明天再试",
+        quota: reservation.quota,
+      }, 429);
+    }
+
+    reservationActive = true;
+    const prompt = buildPrompt(originalName, options);
 
     const result = await env.AI.run(MODEL, {
       messages: [
@@ -129,36 +136,87 @@ async function handleRename(request, env) {
     });
 
     const raw = extractText(result);
-    const name = sanitizeStem(raw);
+    const name = sanitizeStem(raw, options);
     if (!name) {
-      return json({ ok: false, error: "AI没有返回有效名称，请重试" }, 502);
+      await quotaStub(env).release(day, 1);
+      reservationActive = false;
+      return json({ ok: false, error: "AI没有返回有效名称，请重试", quota: await quotaStub(env).getUsage(day) }, 502);
     }
 
-    const usage = extractUsage(result);
-    const neurons = estimateNeurons(usage);
-    const quota = await quotaStub(env).addUsage(utcDayKey(), neurons, 1);
-
-    return json({ ok: true, name, usage, neurons, quota });
+    reservationActive = false;
+    let quota = reservation.quota;
+    try {
+      quota = await quotaStub(env).getUsage(day);
+    } catch (quotaError) {
+      console.error("quota refresh after success failed", quotaError);
+    }
+    return json({ ok: true, name, quota, options });
   } catch (error) {
     console.error("rename failed", error);
     const message = String(error?.message || error || "");
 
-    if (/allocation|quota|limit|3036|429/i.test(message)) {
-      let quota = null;
+    let quota = null;
+    if (reservationActive && reservationDay) {
       try {
-        quota = await quotaStub(env).markExhausted(utcDayKey());
+        quota = await quotaStub(env).release(reservationDay, 1);
+        reservationActive = false;
       } catch (quotaError) {
-        console.error("quota exhausted sync failed", quotaError);
+        console.error("quota release after failure failed", quotaError);
       }
-      return json({ ok: false, error: "今天的免费识图额度已用完，请明天再试", quota }, 429);
+    }
+
+    if (/allocation|quota|limit|3036|429/i.test(message)) {
+      return json({
+        ok: false,
+        code: "AI_PROVIDER_QUOTA_EXHAUSTED",
+        error: "Cloudflare AI 今日官方资源已用尽，请明天再试",
+        quota,
+      }, 429);
     }
 
     if (/capacity|3040/i.test(message)) {
-      return json({ ok: false, error: "AI服务暂时繁忙，请稍后重试" }, 503);
+      return json({ ok: false, error: "AI服务暂时繁忙，请稍后重试", quota }, 503);
     }
 
-    return json({ ok: false, error: "识别失败，请重试" }, 500);
+    return json({ ok: false, error: "识别失败，请重试", quota }, 500);
   }
+}
+
+function normalizeOptions(options) {
+  const nameLength = Math.max(2, Math.min(30, Math.trunc(Number(options?.nameLength) || 8)));
+  return {
+    nameLength,
+    allowSymbols: Boolean(options?.allowSymbols),
+    allowEnglish: Boolean(options?.allowEnglish),
+  };
+}
+
+function buildPrompt(originalName, options) {
+  const lines = [
+    "请识别这张图片，并为它生成一个适合作为文件名的名称。",
+    "命名规则：",
+    "1. 只输出文件名主体，不要扩展名，不要解释，不要引号。",
+    "2. 优先写清楚核心物品，再补充颜色、角度、数量或使用场景。",
+    `3. 文件名主体最多 ${options.nameLength} 个字或字符，扩展名不计算在内。`,
+    "4. 不猜测看不清的品牌、型号、材质或功能。",
+    "5. 不使用斜杠、冒号、星号、问号、引号、尖括号、竖线等文件名非法字符。",
+    "6. 不使用‘图片’‘照片’‘实拍图’等空泛结尾。",
+  ];
+
+  if (options.allowEnglish) {
+    lines.push("7. 允许使用英文；当产品本身以英文更自然时，可以保留少量英文或字母。");
+  } else {
+    lines.push("7. 不要输出英文、拼音或纯字母缩写，优先使用简体中文。");
+  }
+
+  if (options.allowSymbols) {
+    lines.push("8. 允许在必要时使用少量普通符号，例如短横线或下划线；但仍不要使用 Windows 非法字符。");
+  } else {
+    lines.push("8. 不要使用任何符号，只保留中文、英文或数字本身。空格也尽量不要出现。");
+  }
+
+  if (originalName) lines.push(`原文件名仅供参考：${originalName}`);
+  return lines.join("\n");
 }
 
 function quotaStub(env) {
@@ -177,21 +235,20 @@ function utcDayKey(date = new Date()) {
 function normalizeStoredQuota(value, day) {
   return {
     day,
-    used: roundNeurons(positiveNumber(value?.used)),
     images: Math.max(0, Math.trunc(Number(value?.images) || 0)),
   };
 }
 
 function quotaPayload(value) {
-  const used = Math.max(0, value.used);
+  const used = Math.max(0, Math.trunc(Number(value.images) || 0));
   return {
     day: value.day,
-    limit: FREE_DAILY_NEURONS,
+    limit: FREE_DAILY_IMAGES,
     used,
-    remaining: Math.max(0, roundNeurons(FREE_DAILY_NEURONS - used)),
-    images: value.images,
+    remaining: Math.max(0, FREE_DAILY_IMAGES - used),
+    images: used,
     resetAt: `${nextUtcDay(value.day)}T00:00:00.000Z`,
-    source: "cloudflare-official-usage",
+    source: "image-count",
   };
 }
 
@@ -199,15 +256,6 @@ function nextUtcDay(day) {
   const date = new Date(`${day}T00:00:00.000Z`);
   date.setUTCDate(date.getUTCDate() + 1);
   return date.toISOString().slice(0, 10);
-}
-
-function positiveNumber(value) {
-  const number = Number(value);
-  return Number.isFinite(number) && number > 0 ? number : 0;
-}
-
-function roundNeurons(value) {
-  return Math.round(Number(value || 0) * 1000) / 1000;
 }
 
 function extractText(result) {
@@ -220,23 +268,8 @@ function extractText(result) {
   return "";
 }
 
-function extractUsage(result) {
-  const source = result?.usage || result?.result?.usage || {};
-  return {
-    prompt_tokens: Math.max(0, Number(source.prompt_tokens) || 0),
-    completion_tokens: Math.max(0, Number(source.completion_tokens) || 0),
-    total_tokens: Math.max(0, Number(source.total_tokens) || 0),
-  };
-}
-
-function estimateNeurons(usage) {
-  const input = usage.prompt_tokens * INPUT_NEURONS_PER_MILLION_TOKENS / 1_000_000;
-  const output = usage.completion_tokens * OUTPUT_NEURONS_PER_MILLION_TOKENS / 1_000_000;
-  return roundNeurons(input + output);
-}
-
-function sanitizeStem(value) {
-  return String(value || "")
+function sanitizeStem(value, options = {}) {
+  let text = String(value || "")
     .replace(/```[\s\S]*?```/g, (block) => block.replace(/```\w*/g, "").replace(/```/g, ""))
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -247,9 +280,25 @@ function sanitizeStem(value) {
     .replace(/\.(jpe?g|png|webp|gif|bmp|avif|heic)$/i, "")
     .replace(/[\\/:*?<>|]/g, "")
     .replace(/[。！!，,；;：:]+$/g, "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 60) || "";
+    .replace(/\s+/g, "")
+    .trim() || "";
+
+  if (!options.allowEnglish) {
+    text = text.replace(/[A-Za-z]+/g, "");
+  }
+
+  if (!options.allowSymbols) {
+    text = text.replace(/[^\u3400-\u9fffA-Za-z0-9]/g, "");
+  } else {
+    text = text.replace(/[^\u3400-\u9fffA-Za-z0-9_\-+&]/g, "");
+  }
+
+  const chars = Array.from(text);
+  if (chars.length > options.nameLength) {
+    text = chars.slice(0, options.nameLength).join("");
+  }
+
+  return text.slice(0, 60);
 }
 
 function json(data, status = 200) {
