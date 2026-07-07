@@ -1,27 +1,77 @@
+import { DurableObject } from "cloudflare:workers";
+
 const MODEL = "@cf/meta/llama-4-scout-17b-16e-instruct";
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
+const FREE_DAILY_NEURONS = 10_000;
 const INPUT_NEURONS_PER_MILLION_TOKENS = 24_545;
 const OUTPUT_NEURONS_PER_MILLION_TOKENS = 77_273;
+const QUOTA_OBJECT_NAME = "workers-ai-daily-quota";
+
+export class QuotaCounter extends DurableObject {
+  async getUsage(day) {
+    const stored = await this.ctx.storage.get(quotaKey(day));
+    return quotaPayload(normalizeStoredQuota(stored, day));
+  }
+
+  async addUsage(day, neurons, images = 1) {
+    return this.ctx.storage.transaction(async (txn) => {
+      const key = quotaKey(day);
+      const current = normalizeStoredQuota(await txn.get(key), day);
+      current.used = roundNeurons(current.used + positiveNumber(neurons));
+      current.images += Math.max(0, Math.trunc(Number(images) || 0));
+      await txn.put(key, current);
+      return quotaPayload(current);
+    });
+  }
+
+  async markExhausted(day) {
+    return this.ctx.storage.transaction(async (txn) => {
+      const key = quotaKey(day);
+      const current = normalizeStoredQuota(await txn.get(key), day);
+      current.used = Math.max(current.used, FREE_DAILY_NEURONS);
+      await txn.put(key, current);
+      return quotaPayload(current);
+    });
+  }
+}
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
+    if (url.pathname === "/api/quota") {
+      if (request.method === "OPTIONS") {
+        return new Response(null, { status: 204, headers: corsHeaders() });
+      }
+      if (request.method !== "GET") {
+        return json({ ok: false, error: "只支持 GET 请求" }, 405);
+      }
+      return handleQuota(env);
+    }
+
     if (url.pathname === "/api/rename") {
       if (request.method === "OPTIONS") {
         return new Response(null, { status: 204, headers: corsHeaders() });
       }
-
       if (request.method !== "POST") {
         return json({ ok: false, error: "只支持 POST 请求" }, 405);
       }
-
       return handleRename(request, env);
     }
 
     return env.ASSETS.fetch(request);
   },
 };
+
+async function handleQuota(env) {
+  try {
+    const quota = await quotaStub(env).getUsage(utcDayKey());
+    return json({ ok: true, quota });
+  } catch (error) {
+    console.error("quota read failed", error);
+    return json({ ok: false, error: "额度同步失败，请刷新重试" }, 503);
+  }
+}
 
 async function handleRename(request, env) {
   try {
@@ -56,7 +106,7 @@ async function handleRename(request, env) {
       "3. 长度控制在6到24个字符，简洁、准确、自然。",
       "4. 不猜测看不清的品牌、型号、材质或功能。",
       "5. 不使用斜杠、冒号、星号、问号、引号、尖括号、竖线等文件名非法字符。",
-      "6. 不使用“图片”“照片”“实拍图”等空泛结尾。",
+      "6. 不使用‘图片’‘照片’‘实拍图’等空泛结尾。",
       originalName ? `原文件名仅供参考：${originalName}` : "",
     ].filter(Boolean).join("\n");
 
@@ -80,21 +130,27 @@ async function handleRename(request, env) {
 
     const raw = extractText(result);
     const name = sanitizeStem(raw);
-
     if (!name) {
       return json({ ok: false, error: "AI没有返回有效名称，请重试" }, 502);
     }
 
     const usage = extractUsage(result);
     const neurons = estimateNeurons(usage);
+    const quota = await quotaStub(env).addUsage(utcDayKey(), neurons, 1);
 
-    return json({ ok: true, name, usage, neurons });
+    return json({ ok: true, name, usage, neurons, quota });
   } catch (error) {
     console.error("rename failed", error);
     const message = String(error?.message || error || "");
 
     if (/allocation|quota|limit|3036|429/i.test(message)) {
-      return json({ ok: false, error: "今天的免费识图额度已用完，请明天再试" }, 429);
+      let quota = null;
+      try {
+        quota = await quotaStub(env).markExhausted(utcDayKey());
+      } catch (quotaError) {
+        console.error("quota exhausted sync failed", quotaError);
+      }
+      return json({ ok: false, error: "今天的免费识图额度已用完，请明天再试", quota }, 429);
     }
 
     if (/capacity|3040/i.test(message)) {
@@ -103,6 +159,55 @@ async function handleRename(request, env) {
 
     return json({ ok: false, error: "识别失败，请重试" }, 500);
   }
+}
+
+function quotaStub(env) {
+  if (!env.QUOTA_COUNTER) throw new Error("QUOTA_COUNTER binding is missing");
+  return env.QUOTA_COUNTER.getByName(QUOTA_OBJECT_NAME);
+}
+
+function quotaKey(day) {
+  return `quota:${day}`;
+}
+
+function utcDayKey(date = new Date()) {
+  return date.toISOString().slice(0, 10);
+}
+
+function normalizeStoredQuota(value, day) {
+  return {
+    day,
+    used: roundNeurons(positiveNumber(value?.used)),
+    images: Math.max(0, Math.trunc(Number(value?.images) || 0)),
+  };
+}
+
+function quotaPayload(value) {
+  const used = Math.max(0, value.used);
+  return {
+    day: value.day,
+    limit: FREE_DAILY_NEURONS,
+    used,
+    remaining: Math.max(0, roundNeurons(FREE_DAILY_NEURONS - used)),
+    images: value.images,
+    resetAt: `${nextUtcDay(value.day)}T00:00:00.000Z`,
+    source: "cloudflare-official-usage",
+  };
+}
+
+function nextUtcDay(day) {
+  const date = new Date(`${day}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + 1);
+  return date.toISOString().slice(0, 10);
+}
+
+function positiveNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : 0;
+}
+
+function roundNeurons(value) {
+  return Math.round(Number(value || 0) * 1000) / 1000;
 }
 
 function extractText(result) {
@@ -127,7 +232,7 @@ function extractUsage(result) {
 function estimateNeurons(usage) {
   const input = usage.prompt_tokens * INPUT_NEURONS_PER_MILLION_TOKENS / 1_000_000;
   const output = usage.completion_tokens * OUTPUT_NEURONS_PER_MILLION_TOKENS / 1_000_000;
-  return Math.round((input + output) * 1000) / 1000;
+  return roundNeurons(input + output);
 }
 
 function sanitizeStem(value) {
@@ -161,7 +266,7 @@ function json(data, status = 200) {
 function corsHeaders() {
   return {
     "access-control-allow-origin": "*",
-    "access-control-allow-methods": "POST, OPTIONS",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
     "access-control-allow-headers": "content-type",
   };
 }
