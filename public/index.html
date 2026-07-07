@@ -24,10 +24,9 @@
     <section class="quota-card" aria-label="Workers AI 今日额度">
       <div class="quota-main">
         <div>
-          <span class="quota-eyebrow">今日免费额度（本浏览器估算）</span>
-          <strong><span id="quotaRemaining">10,000</span> <small>Neurons 剩余</small></strong>
+          <span class="quota-eyebrow">今日免费额度（Cloudflare 官方用量累计）</span>
+          <strong><span id="quotaRemaining">--</span> <small>Neurons 剩余</small></strong>
         </div>
-        <a class="quota-link" href="https://dash.cloudflare.com/?to=%2F%3Aaccount%2Fai%2Fworkers-ai" target="_blank" rel="noopener noreferrer">查看官方准确额度</a>
       </div>
       <div class="quota-track"><div id="quotaBar" class="quota-bar"></div></div>
       <div class="quota-details">
@@ -35,7 +34,7 @@
         <span>本浏览器今日成功识别 <b id="quotaImages">0</b> 张</span>
         <span id="quotaReset">每日 UTC 00:00 重置</span>
       </div>
-      <p class="quota-note">这里按本网站返回的模型 token 用量估算；多个设备或其他 Workers AI 项目的消耗，请以上方官方额度为准。</p>
+      <p class="quota-note" id="quotaNote">正在从 Cloudflare 服务器同步今日用量…</p>
     </section>
 
     <section id="folderPicker" class="drop-zone" tabindex="0" role="button" aria-label="选择图片文件夹">

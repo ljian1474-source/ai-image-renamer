@@ -2,7 +2,6 @@ const MAX_FILES = 500;
 const MAX_ORIGINAL_SIZE = 50 * 1024 * 1024;
 const RECOGNITION_CONCURRENCY = 3;
 const FREE_DAILY_NEURONS = 10_000;
-const QUOTA_STORAGE_KEY = "ai-image-renamer-quota-v1";
 const ALLOWED_EXTENSIONS = new Set(["jpg", "jpeg", "png", "webp"]);
 
 const state = {
@@ -31,9 +30,12 @@ const quotaUsed = document.querySelector("#quotaUsed");
 const quotaImages = document.querySelector("#quotaImages");
 const quotaBar = document.querySelector("#quotaBar");
 const quotaReset = document.querySelector("#quotaReset");
+const quotaNote = document.querySelector("#quotaNote");
 
-let quotaState = loadQuotaState();
+let quotaState = { day: "", limit: FREE_DAILY_NEURONS, used: 0, remaining: FREE_DAILY_NEURONS, images: 0, resetAt: "" };
 renderQuota();
+refreshQuota();
+setInterval(refreshQuota, 60_000);
 
 const supportsDirectRename = "showDirectoryPicker" in window;
 unsupported.classList.toggle("hidden", supportsDirectRename);
@@ -268,6 +270,8 @@ async function recognizeAll() {
         });
         const data = await response.json().catch(() => ({}));
 
+        if (data.quota) applyQuotaData(data.quota);
+
         if (!response.ok || !data.ok) {
           const error = new Error(data.error || "识别失败");
           error.status = response.status;
@@ -276,7 +280,6 @@ async function recognizeAll() {
 
         item.name = sanitizeStem(data.name) || fallbackStem(item.originalName);
         item.status = "success";
-        recordQuotaUsage(data.neurons, 1);
         successCount += 1;
       } catch (error) {
         item.status = "error";
@@ -524,75 +527,60 @@ function pathKey(path) {
   return path || ".";
 }
 
-function utcDayKey(date = new Date()) {
-  return date.toISOString().slice(0, 10);
-}
-
-function loadQuotaState() {
-  const today = utcDayKey();
+async function refreshQuota() {
   try {
-    const stored = JSON.parse(localStorage.getItem(QUOTA_STORAGE_KEY) || "null");
-    if (stored?.day === today) {
-      return {
-        day: today,
-        used: Math.max(0, Number(stored.used) || 0),
-        images: Math.max(0, Number(stored.images) || 0),
-      };
+    const response = await fetch("/api/quota", {
+      method: "GET",
+      headers: { "accept": "application/json" },
+      cache: "no-store",
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.ok || !data.quota) {
+      throw new Error(data.error || "额度同步失败");
     }
-  } catch {
-    // 本地统计损坏时从当天 0 开始。
-  }
-  return { day: today, used: 0, images: 0 };
-}
-
-function saveQuotaState() {
-  try {
-    localStorage.setItem(QUOTA_STORAGE_KEY, JSON.stringify(quotaState));
-  } catch {
-    // 禁用本地存储不会影响识图。
+    applyQuotaData(data.quota);
+    quotaNote.textContent = "按 Cloudflare 每次推理返回的官方 token 用量与该模型官方 Neurons 费率累计，服务器统一保存；每日 UTC 00:00 重置。";
+  } catch (error) {
+    quotaNote.textContent = `额度同步失败：${friendlyError(error)}`;
   }
 }
 
-function ensureCurrentQuotaDay() {
-  const today = utcDayKey();
-  if (quotaState.day !== today) {
-    quotaState = { day: today, used: 0, images: 0 };
-    saveQuotaState();
-  }
-}
-
-function recordQuotaUsage(neurons, imageCount = 0) {
-  ensureCurrentQuotaDay();
-  const value = Number(neurons);
-  if (Number.isFinite(value) && value > 0) quotaState.used += value;
-  quotaState.images += imageCount;
-  saveQuotaState();
+function applyQuotaData(data) {
+  const limit = Math.max(1, Number(data?.limit) || FREE_DAILY_NEURONS);
+  const used = Math.max(0, Number(data?.used) || 0);
+  quotaState = {
+    day: String(data?.day || ""),
+    limit,
+    used,
+    remaining: Math.max(0, Number.isFinite(Number(data?.remaining)) ? Number(data.remaining) : limit - used),
+    images: Math.max(0, Math.trunc(Number(data?.images) || 0)),
+    resetAt: String(data?.resetAt || ""),
+  };
   renderQuota();
 }
 
 function markQuotaExhausted() {
-  ensureCurrentQuotaDay();
-  quotaState.used = Math.max(quotaState.used, FREE_DAILY_NEURONS);
-  saveQuotaState();
+  quotaState.used = Math.max(quotaState.used, quotaState.limit || FREE_DAILY_NEURONS);
+  quotaState.remaining = 0;
   renderQuota();
 }
 
 function renderQuota() {
-  ensureCurrentQuotaDay();
-  const used = Math.max(0, quotaState.used);
-  const remaining = Math.max(0, FREE_DAILY_NEURONS - used);
-  const percentage = Math.min(100, (used / FREE_DAILY_NEURONS) * 100);
+  const limit = Math.max(1, quotaState.limit || FREE_DAILY_NEURONS);
+  const used = Math.max(0, quotaState.used || 0);
+  const remaining = Math.max(0, Number.isFinite(quotaState.remaining) ? quotaState.remaining : limit - used);
+  const percentage = Math.min(100, (used / limit) * 100);
   quotaUsed.textContent = formatNumber(used);
   quotaRemaining.textContent = formatNumber(remaining);
-  quotaImages.textContent = String(quotaState.images);
+  quotaImages.textContent = String(quotaState.images || 0);
   quotaBar.style.width = `${percentage}%`;
-  quotaReset.textContent = `UTC ${nextUtcResetText()} 重置`;
+  quotaReset.textContent = quotaState.resetAt ? `UTC ${formatUtcReset(quotaState.resetAt)} 重置` : "每日 UTC 00:00 重置";
 }
 
-function nextUtcResetText() {
-  const now = new Date();
-  const reset = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
-  return reset.toLocaleString("zh-CN", {
+function formatUtcReset(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "00:00";
+  return date.toLocaleString("zh-CN", {
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
