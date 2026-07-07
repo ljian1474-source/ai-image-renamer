@@ -1,6 +1,8 @@
 const MAX_FILES = 500;
 const MAX_ORIGINAL_SIZE = 50 * 1024 * 1024;
 const RECOGNITION_CONCURRENCY = 3;
+const FREE_DAILY_NEURONS = 10_000;
+const QUOTA_STORAGE_KEY = "ai-image-renamer-quota-v1";
 const ALLOWED_EXTENSIONS = new Set(["jpg", "jpeg", "png", "webp"]);
 
 const state = {
@@ -24,6 +26,14 @@ const globalMessage = document.querySelector("#globalMessage");
 const progressBar = document.querySelector("#progressBar");
 const progressText = document.querySelector("#progressText");
 const rowTemplate = document.querySelector("#rowTemplate");
+const quotaRemaining = document.querySelector("#quotaRemaining");
+const quotaUsed = document.querySelector("#quotaUsed");
+const quotaImages = document.querySelector("#quotaImages");
+const quotaBar = document.querySelector("#quotaBar");
+const quotaReset = document.querySelector("#quotaReset");
+
+let quotaState = loadQuotaState();
+renderQuota();
 
 const supportsDirectRename = "showDirectoryPicker" in window;
 unsupported.classList.toggle("hidden", supportsDirectRename);
@@ -266,12 +276,16 @@ async function recognizeAll() {
 
         item.name = sanitizeStem(data.name) || fallbackStem(item.originalName);
         item.status = "success";
+        recordQuotaUsage(data.neurons, 1);
         successCount += 1;
       } catch (error) {
         item.status = "error";
         item.error = friendlyError(error);
         failureCount += 1;
-        if (error?.status === 429 || /额度已用完/i.test(item.error)) quotaStopped = true;
+        if (error?.status === 429 || /额度已用完/i.test(item.error)) {
+          quotaStopped = true;
+          markQuotaExhausted();
+        }
       }
 
       state.completed += 1;
@@ -508,6 +522,89 @@ function joinPath(base, name) {
 
 function pathKey(path) {
   return path || ".";
+}
+
+function utcDayKey(date = new Date()) {
+  return date.toISOString().slice(0, 10);
+}
+
+function loadQuotaState() {
+  const today = utcDayKey();
+  try {
+    const stored = JSON.parse(localStorage.getItem(QUOTA_STORAGE_KEY) || "null");
+    if (stored?.day === today) {
+      return {
+        day: today,
+        used: Math.max(0, Number(stored.used) || 0),
+        images: Math.max(0, Number(stored.images) || 0),
+      };
+    }
+  } catch {
+    // 本地统计损坏时从当天 0 开始。
+  }
+  return { day: today, used: 0, images: 0 };
+}
+
+function saveQuotaState() {
+  try {
+    localStorage.setItem(QUOTA_STORAGE_KEY, JSON.stringify(quotaState));
+  } catch {
+    // 禁用本地存储不会影响识图。
+  }
+}
+
+function ensureCurrentQuotaDay() {
+  const today = utcDayKey();
+  if (quotaState.day !== today) {
+    quotaState = { day: today, used: 0, images: 0 };
+    saveQuotaState();
+  }
+}
+
+function recordQuotaUsage(neurons, imageCount = 0) {
+  ensureCurrentQuotaDay();
+  const value = Number(neurons);
+  if (Number.isFinite(value) && value > 0) quotaState.used += value;
+  quotaState.images += imageCount;
+  saveQuotaState();
+  renderQuota();
+}
+
+function markQuotaExhausted() {
+  ensureCurrentQuotaDay();
+  quotaState.used = Math.max(quotaState.used, FREE_DAILY_NEURONS);
+  saveQuotaState();
+  renderQuota();
+}
+
+function renderQuota() {
+  ensureCurrentQuotaDay();
+  const used = Math.max(0, quotaState.used);
+  const remaining = Math.max(0, FREE_DAILY_NEURONS - used);
+  const percentage = Math.min(100, (used / FREE_DAILY_NEURONS) * 100);
+  quotaUsed.textContent = formatNumber(used);
+  quotaRemaining.textContent = formatNumber(remaining);
+  quotaImages.textContent = String(quotaState.images);
+  quotaBar.style.width = `${percentage}%`;
+  quotaReset.textContent = `UTC ${nextUtcResetText()} 重置`;
+}
+
+function nextUtcResetText() {
+  const now = new Date();
+  const reset = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1));
+  return reset.toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+    timeZone: "UTC",
+  });
+}
+
+function formatNumber(value) {
+  const rounded = value >= 100 ? Math.round(value) : Math.round(value * 10) / 10;
+  return rounded.toLocaleString("zh-CN", { maximumFractionDigits: 1 });
 }
 
 function friendlyError(error) {

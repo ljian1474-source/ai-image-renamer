@@ -21,6 +21,23 @@
       当前浏览器不支持直接修改本地文件。请使用最新版 Chrome 或 Edge 打开本网站。
     </section>
 
+    <section class="quota-card" aria-label="Workers AI 今日额度">
+      <div class="quota-main">
+        <div>
+          <span class="quota-eyebrow">今日免费额度（本浏览器估算）</span>
+          <strong><span id="quotaRemaining">10,000</span> <small>Neurons 剩余</small></strong>
+        </div>
+        <a class="quota-link" href="https://dash.cloudflare.com/?to=%2F%3Aaccount%2Fai%2Fworkers-ai" target="_blank" rel="noopener noreferrer">查看官方准确额度</a>
+      </div>
+      <div class="quota-track"><div id="quotaBar" class="quota-bar"></div></div>
+      <div class="quota-details">
+        <span>已用约 <b id="quotaUsed">0</b> / 10,000</span>
+        <span>本浏览器今日成功识别 <b id="quotaImages">0</b> 张</span>
+        <span id="quotaReset">每日 UTC 00:00 重置</span>
+      </div>
+      <p class="quota-note">这里按本网站返回的模型 token 用量估算；多个设备或其他 Workers AI 项目的消耗，请以上方官方额度为准。</p>
+    </section>
+
     <section id="folderPicker" class="drop-zone" tabindex="0" role="button" aria-label="选择图片文件夹">
       <div class="upload-icon" aria-hidden="true">
         <svg viewBox="0 0 24 24" width="34" height="34"><path d="M3.5 7.5A2.5 2.5 0 0 1 6 5h4l2 2h6A2.5 2.5 0 0 1 20.5 9.5v7A2.5 2.5 0 0 1 18 19H6a2.5 2.5 0 0 1-2.5-2.5v-9Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M12 10v6m0-6-2.5 2.5M12 10l2.5 2.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
