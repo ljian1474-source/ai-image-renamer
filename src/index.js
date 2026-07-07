@@ -1,5 +1,7 @@
 const MODEL = "@cf/meta/llama-4-scout-17b-16e-instruct";
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
+const INPUT_NEURONS_PER_MILLION_TOKENS = 24_545;
+const OUTPUT_NEURONS_PER_MILLION_TOKENS = 77_273;
 
 export default {
   async fetch(request, env) {
@@ -83,7 +85,10 @@ async function handleRename(request, env) {
       return json({ ok: false, error: "AI没有返回有效名称，请重试" }, 502);
     }
 
-    return json({ ok: true, name });
+    const usage = extractUsage(result);
+    const neurons = estimateNeurons(usage);
+
+    return json({ ok: true, name, usage, neurons });
   } catch (error) {
     console.error("rename failed", error);
     const message = String(error?.message || error || "");
@@ -108,6 +113,21 @@ function extractText(result) {
     return result.choices[0].message.content;
   }
   return "";
+}
+
+function extractUsage(result) {
+  const source = result?.usage || result?.result?.usage || {};
+  return {
+    prompt_tokens: Math.max(0, Number(source.prompt_tokens) || 0),
+    completion_tokens: Math.max(0, Number(source.completion_tokens) || 0),
+    total_tokens: Math.max(0, Number(source.total_tokens) || 0),
+  };
+}
+
+function estimateNeurons(usage) {
+  const input = usage.prompt_tokens * INPUT_NEURONS_PER_MILLION_TOKENS / 1_000_000;
+  const output = usage.completion_tokens * OUTPUT_NEURONS_PER_MILLION_TOKENS / 1_000_000;
+  return Math.round((input + output) * 1000) / 1000;
 }
 
 function sanitizeStem(value) {
