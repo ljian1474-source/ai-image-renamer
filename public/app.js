@@ -1,7 +1,7 @@
 const MAX_FILES = 500;
 const MAX_ORIGINAL_SIZE = 50 * 1024 * 1024;
 const RECOGNITION_CONCURRENCY = 3;
-const FREE_DAILY_NEURONS = 10_000;
+const FREE_DAILY_IMAGES = 1000;
 const ALLOWED_EXTENSIONS = new Set(["jpg", "jpeg", "png", "webp"]);
 
 const state = {
@@ -31,8 +31,11 @@ const quotaImages = document.querySelector("#quotaImages");
 const quotaBar = document.querySelector("#quotaBar");
 const quotaReset = document.querySelector("#quotaReset");
 const quotaNote = document.querySelector("#quotaNote");
+const nameLengthInput = document.querySelector("#nameLength");
+const allowSymbolsSelect = document.querySelector("#allowSymbols");
+const allowEnglishSelect = document.querySelector("#allowEnglish");
 
-let quotaState = { day: "", limit: FREE_DAILY_NEURONS, used: 0, remaining: FREE_DAILY_NEURONS, images: 0, resetAt: "" };
+let quotaState = { day: "", limit: FREE_DAILY_IMAGES, used: 0, remaining: FREE_DAILY_IMAGES, images: 0, resetAt: "" };
 renderQuota();
 refreshQuota();
 setInterval(refreshQuota, 60_000);
@@ -51,6 +54,57 @@ folderPicker.addEventListener("keydown", (event) => {
 changeFolderBtn.addEventListener("click", chooseFolder);
 recognizeBtn.addEventListener("click", recognizeAll);
 renameBtn.addEventListener("click", renameOriginalFiles);
+nameLengthInput.addEventListener("input", handleRuleChange);
+allowSymbolsSelect.addEventListener("change", handleRuleChange);
+allowEnglishSelect.addEventListener("change", handleRuleChange);
+restoreRuleInputs();
+normalizeRuleInputs();
+
+function normalizeRuleInputs() {
+  const value = Number(nameLengthInput.value);
+  const safe = Number.isFinite(value) ? Math.max(2, Math.min(30, Math.trunc(value))) : 8;
+  if (String(safe) !== nameLengthInput.value) nameLengthInput.value = String(safe);
+  try {
+    localStorage.setItem("ai-renamer-rules", JSON.stringify({
+      nameLength: safe,
+      allowSymbols: allowSymbolsSelect.value,
+      allowEnglish: allowEnglishSelect.value,
+    }));
+  } catch {
+    // 浏览器禁用本地存储时不影响使用。
+  }
+}
+
+function restoreRuleInputs() {
+  try {
+    const saved = JSON.parse(localStorage.getItem("ai-renamer-rules") || "null");
+    if (!saved) return;
+    if (Number.isFinite(Number(saved.nameLength))) nameLengthInput.value = String(saved.nameLength);
+    if (["yes", "no"].includes(saved.allowSymbols)) allowSymbolsSelect.value = saved.allowSymbols;
+    if (["yes", "no"].includes(saved.allowEnglish)) allowEnglishSelect.value = saved.allowEnglish;
+  } catch {
+    // 忽略损坏的本地设置。
+  }
+}
+
+function getNamingRules() {
+  normalizeRuleInputs();
+  return {
+    nameLength: Math.max(2, Math.min(30, Math.trunc(Number(nameLengthInput.value) || 8))),
+    allowSymbols: allowSymbolsSelect.value === "yes",
+    allowEnglish: allowEnglishSelect.value === "yes",
+  };
+}
+
+function handleRuleChange() {
+  normalizeRuleInputs();
+  const rules = getNamingRules();
+  for (const item of state.items) {
+    if (item.status === "renamed" || !item.name) continue;
+    item.name = sanitizeStemByRules(item.name, rules);
+  }
+  if (state.items.length) render();
+}
 
 async function chooseFolder() {
   if (!supportsDirectRename || state.recognizing || state.renaming) return;
@@ -158,12 +212,13 @@ function render() {
     filePath.textContent = item.relativePath || "当前文件夹";
     fileSize.textContent = formatBytes(item.file.size);
     input.value = item.name;
+    input.maxLength = getNamingRules().nameLength;
     input.disabled = item.status === "loading" || state.renaming || item.status === "renamed";
     extension.textContent = `.${item.extension}`;
     applyStatus(status, item);
 
     input.addEventListener("input", (event) => {
-      item.name = sanitizeStem(event.target.value);
+      item.name = sanitizeStemByRules(event.target.value, getNamingRules());
       if (event.target.value !== item.name) event.target.value = item.name;
       updateButtons();
     });
@@ -184,6 +239,7 @@ function updateRow(item) {
   const originalName = row.querySelector(".original-name");
 
   input.value = item.name;
+  input.maxLength = getNamingRules().nameLength;
   input.disabled = item.status === "loading" || state.renaming || item.status === "renamed";
   originalName.textContent = item.originalName;
   originalName.title = item.originalName;
@@ -215,8 +271,9 @@ function applyStatus(element, item) {
 
 function updateButtons() {
   const hasItems = state.items.length > 0;
+  const activeRules = getNamingRules();
   const readyToRename = state.items.some(
-    (item) => sanitizeStem(item.name) && item.status !== "renamed" && item.status !== "loading",
+    (item) => sanitizeStemByRules(item.name, activeRules) && item.status !== "renamed" && item.status !== "loading",
   );
 
   recognizeBtn.disabled = !hasItems || state.recognizing || state.renaming;
@@ -229,10 +286,17 @@ function updateButtons() {
 async function recognizeAll() {
   if (state.recognizing || state.renaming || state.items.length === 0) return;
   hideGlobalMessage();
+  const rules = getNamingRules();
+
+  if (quotaState.remaining <= 0) {
+    showGlobalMessage("今天的图片额度已用完，请明天再试。");
+    return;
+  }
+
   state.recognizing = true;
 
   const queue = state.items.filter(
-    (item) => item.status !== "renamed" && (item.status === "idle" || item.status === "error" || !sanitizeStem(item.name)),
+    (item) => item.status !== "renamed" && (item.status === "idle" || item.status === "error" || !sanitizeStemByRules(item.name, rules)),
   );
   if (queue.length === 0) {
     state.recognizing = false;
@@ -266,7 +330,11 @@ async function recognizeAll() {
         const response = await fetchWithRetry("/api/rename", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ image, originalName: item.originalName }),
+          body: JSON.stringify({
+            image,
+            originalName: item.originalName,
+            options: rules,
+          }),
         });
         const data = await response.json().catch(() => ({}));
 
@@ -275,17 +343,18 @@ async function recognizeAll() {
         if (!response.ok || !data.ok) {
           const error = new Error(data.error || "识别失败");
           error.status = response.status;
+          error.code = data.code || "";
           throw error;
         }
 
-        item.name = sanitizeStem(data.name) || fallbackStem(item.originalName);
+        item.name = sanitizeStemByRules(data.name, rules) || fallbackStem(rules);
         item.status = "success";
         successCount += 1;
       } catch (error) {
         item.status = "error";
         item.error = friendlyError(error);
         failureCount += 1;
-        if (error?.status === 429 || /额度已用完/i.test(item.error)) {
+        if (error?.code === "CUSTOM_QUOTA_EXHAUSTED") {
           quotaStopped = true;
           markQuotaExhausted();
         }
@@ -297,24 +366,107 @@ async function recognizeAll() {
     }
   }
 
-  await Promise.all(
-    Array.from({ length: Math.min(RECOGNITION_CONCURRENCY, queue.length) }, () => worker()),
-  );
-
-  state.recognizing = false;
-  updateButtons();
-  updateProgress(state.completed, queue.length, quotaStopped ? "额度已暂停" : "识别完成");
+  try {
+    const workerCount = Math.min(RECOGNITION_CONCURRENCY, queue.length);
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  } finally {
+    state.recognizing = false;
+    updateButtons();
+  }
 
   if (quotaStopped) {
-    showGlobalMessage(`免费识图额度已用完。已完成 ${successCount} 张，剩余图片可明天继续识别，已经生成的名称不会受影响。`);
-  } else if (failureCount > 0) {
-    showGlobalMessage(`已完成 ${successCount} 张，失败 ${failureCount} 张。再次点击“开始识图改名”可重试。`);
+    showGlobalMessage(`已成功识别 ${successCount} 张，今天的图片额度已用完。`, successCount > 0 ? "success" : undefined);
+    updateProgress(state.completed, queue.length, "额度已用完");
+    return;
   }
+
+  if (failureCount > 0) {
+    showGlobalMessage(`识别完成：成功 ${successCount} 张，失败 ${failureCount} 张。失败项可以重新识别。`);
+  } else {
+    showGlobalMessage(`识别完成：已成功生成 ${successCount} 个文件名。`, "success");
+  }
+  updateProgress(queue.length, queue.length, "识别完成");
+}
+
+function renderQuota() {
+  quotaRemaining.textContent = formatCount(quotaState.remaining);
+  quotaUsed.textContent = formatCount(quotaState.used);
+  quotaImages.textContent = formatCount(quotaState.images);
+  const percentage = quotaState.limit > 0 ? Math.min(100, Math.max(0, Math.round((quotaState.used / quotaState.limit) * 100))) : 0;
+  quotaBar.style.width = `${percentage}%`;
+  quotaReset.textContent = quotaState.resetAt ? `UTC ${formatUtcReset(quotaState.resetAt)} 重置` : "每日 UTC 00:00 重置";
+  quotaNote.textContent = quotaState.remaining <= 0
+    ? "今天的图片额度已经用完，请明天再试。"
+    : "每成功识别 1 张图片扣 1 个额度；失败不扣。数据由服务器统一累计。";
+}
+
+async function refreshQuota() {
+  try {
+    const response = await fetch("/api/quota", { cache: "no-store" });
+    const data = await response.json().catch(() => ({}));
+    if (response.ok && data.ok && data.quota) {
+      applyQuotaData(data.quota);
+      return;
+    }
+    quotaNote.textContent = data.error || "额度同步失败，请稍后刷新。";
+  } catch {
+    quotaNote.textContent = "额度同步失败，请检查网络后刷新。";
+  }
+}
+
+function applyQuotaData(quota) {
+  quotaState = {
+    day: quota.day || "",
+    limit: Number(quota.limit) || FREE_DAILY_IMAGES,
+    used: Math.max(0, Number(quota.used) || 0),
+    remaining: Math.max(0, Number(quota.remaining) || 0),
+    images: Math.max(0, Number(quota.images) || 0),
+    resetAt: quota.resetAt || "",
+  };
+  renderQuota();
+}
+
+function markQuotaExhausted() {
+  quotaState.used = quotaState.limit;
+  quotaState.remaining = 0;
+  renderQuota();
+}
+
+function formatUtcReset(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "00:00";
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  const hours = String(date.getUTCHours()).padStart(2, "0");
+  const minutes = String(date.getUTCMinutes()).padStart(2, "0");
+  return `${month}/${day} ${hours}:${minutes}`;
+}
+
+function formatCount(value) {
+  return new Intl.NumberFormat("zh-CN").format(Math.max(0, Math.round(Number(value) || 0)));
+}
+
+function friendlyError(error) {
+  const text = String(error?.message || error || "").trim();
+  if (!text) return "未知错误";
+  return text;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function joinPath(base, name) {
+  return base ? `${base}/${name}` : name;
+}
+
+function pathKey(relativePath) {
+  return relativePath || "/";
 }
 
 async function makeAiPreview(file) {
   const bitmap = await createImageBitmap(file);
-  const maxSide = 640;
+  const maxSide = 1600;
   const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
   const width = Math.max(1, Math.round(bitmap.width * scale));
   const height = Math.max(1, Math.round(bitmap.height * scale));
@@ -347,13 +499,16 @@ async function fetchWithRetry(url, options) {
 async function renameOriginalFiles() {
   if (state.renaming || state.recognizing) return;
 
+  const activeRules = getNamingRules();
   const candidates = state.items.filter(
-    (item) => sanitizeStem(item.name) && item.status !== "renamed",
+    (item) => sanitizeStemByRules(item.name, activeRules) && item.status !== "renamed",
   );
   if (!candidates.length) return;
 
   const confirmed = window.confirm(
-    `将直接修改所选文件夹里的 ${candidates.length} 张原图片文件名。\n\n改名前请确保这些图片没有被 Photoshop、资源管理器预览或其他软件占用。是否继续？`,
+    `将直接修改所选文件夹里的 ${candidates.length} 张原图片文件名。
+
+改名前请确保这些图片没有被 Photoshop、资源管理器预览或其他软件占用。是否继续？`,
   );
   if (!confirmed) return;
 
@@ -385,7 +540,7 @@ async function renameOriginalFiles() {
         if (!permission) throw new Error("文件夹写入权限已失效，请重新选择文件夹");
 
         const usedNames = usedByDirectory.get(pathKey(item.relativePath));
-        const stem = sanitizeStem(item.name) || fallbackStem(item.originalName);
+        const stem = sanitizeStemByRules(item.name, activeRules) || fallbackStem(activeRules);
         const desired = `${stem}.${item.extension}`;
         const finalName = chooseUniqueFilename(desired, item.originalName, usedNames);
 
@@ -498,15 +653,26 @@ function clearState() {
 
 function sanitizeStem(value) {
   return String(value || "")
-    .replace(/[\\/:*?"<>|]/g, "")
+    .replace(/[\/:*?"<>|]/g, "")
     .replace(/\.(jpe?g|png|webp)$/i, "")
     .replace(/[.\s]+$/g, "")
     .replace(/^\s+/g, "")
     .slice(0, 60);
 }
 
-function fallbackStem(filename) {
-  return sanitizeStem(filename.replace(/\.[^.]+$/, "")) || "未命名图片";
+function sanitizeStemByRules(value, rules = getNamingRules()) {
+  let text = sanitizeStem(value).replace(/\s+/g, "");
+  if (!rules.allowEnglish) text = text.replace(/[A-Za-z]+/g, "");
+  if (rules.allowSymbols) {
+    text = text.replace(/[^\u3400-\u9fffA-Za-z0-9_\-+&]/g, "");
+  } else {
+    text = text.replace(/[^\u3400-\u9fffA-Za-z0-9]/g, "");
+  }
+  return Array.from(text).slice(0, rules.nameLength).join("");
+}
+
+function fallbackStem(rules = getNamingRules()) {
+  return sanitizeStemByRules("未命名图片", rules) || "图片";
 }
 
 function getExtensionFromName(name) {
@@ -519,99 +685,13 @@ function formatBytes(bytes) {
   return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
 }
 
-function joinPath(base, name) {
-  return base ? `${base}/${name}` : name;
-}
-
-function pathKey(path) {
-  return path || ".";
-}
-
-async function refreshQuota() {
-  try {
-    const response = await fetch("/api/quota", {
-      method: "GET",
-      headers: { "accept": "application/json" },
-      cache: "no-store",
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok || !data.ok || !data.quota) {
-      throw new Error(data.error || "额度同步失败");
-    }
-    applyQuotaData(data.quota);
-    quotaNote.textContent = "按 Cloudflare 每次推理返回的官方 token 用量与该模型官方 Neurons 费率累计，服务器统一保存；每日 UTC 00:00 重置。";
-  } catch (error) {
-    quotaNote.textContent = `额度同步失败：${friendlyError(error)}`;
-  }
-}
-
-function applyQuotaData(data) {
-  const limit = Math.max(1, Number(data?.limit) || FREE_DAILY_NEURONS);
-  const used = Math.max(0, Number(data?.used) || 0);
-  quotaState = {
-    day: String(data?.day || ""),
-    limit,
-    used,
-    remaining: Math.max(0, Number.isFinite(Number(data?.remaining)) ? Number(data.remaining) : limit - used),
-    images: Math.max(0, Math.trunc(Number(data?.images) || 0)),
-    resetAt: String(data?.resetAt || ""),
-  };
-  renderQuota();
-}
-
-function markQuotaExhausted() {
-  quotaState.used = Math.max(quotaState.used, quotaState.limit || FREE_DAILY_NEURONS);
-  quotaState.remaining = 0;
-  renderQuota();
-}
-
-function renderQuota() {
-  const limit = Math.max(1, quotaState.limit || FREE_DAILY_NEURONS);
-  const used = Math.max(0, quotaState.used || 0);
-  const remaining = Math.max(0, Number.isFinite(quotaState.remaining) ? quotaState.remaining : limit - used);
-  const percentage = Math.min(100, (used / limit) * 100);
-  quotaUsed.textContent = formatNumber(used);
-  quotaRemaining.textContent = formatNumber(remaining);
-  quotaImages.textContent = String(quotaState.images || 0);
-  quotaBar.style.width = `${percentage}%`;
-  quotaReset.textContent = quotaState.resetAt ? `UTC ${formatUtcReset(quotaState.resetAt)} 重置` : "每日 UTC 00:00 重置";
-}
-
-function formatUtcReset(value) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "00:00";
-  return date.toLocaleString("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-    timeZone: "UTC",
-  });
-}
-
-function formatNumber(value) {
-  const rounded = value >= 100 ? Math.round(value) : Math.round(value * 10) / 10;
-  return rounded.toLocaleString("zh-CN", { maximumFractionDigits: 1 });
-}
-
-function friendlyError(error) {
-  const message = String(error?.message || error || "未知错误");
-  if (/notallowed|permission|denied/i.test(message)) return "没有文件夹修改权限";
-  if (/network|fetch failed|failed to fetch/i.test(message)) return "网络连接失败，请稍后重试";
-  return message;
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function showGlobalMessage(message, type = "error") {
   globalMessage.textContent = message;
   globalMessage.className = `global-message ${type}`;
+  globalMessage.classList.remove("hidden");
 }
 
 function hideGlobalMessage() {
-  globalMessage.textContent = "";
   globalMessage.className = "global-message hidden";
+  globalMessage.textContent = "";
 }

@@ -25,7 +25,7 @@ body {
   font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
 }
 
-button, input { font: inherit; }
+button, input, select { font: inherit; }
 
 .app-shell {
   width: min(1180px, calc(100% - 32px));
@@ -83,6 +83,35 @@ button, input { font: inherit; }
 .quota-details { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 7px 16px; margin-top: 9px; color: var(--muted); font-size: 12px; }
 .quota-details b { color: var(--text); }
 .quota-note { margin: 8px 0 0; color: #959daf; font-size: 11px; line-height: 1.55; }
+
+.rules-card {
+  margin-bottom: 18px;
+  padding: 18px 20px;
+  border: 1px solid rgba(228, 233, 242, .95);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, .9);
+  box-shadow: 0 12px 35px rgba(32, 43, 70, .06);
+}
+.rules-title { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; margin-bottom: 14px; }
+.rules-title h2 { margin: 0; font-size: 18px; }
+.rules-title p { margin: 0; color: var(--muted); font-size: 12px; }
+.rules-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.field { display: grid; gap: 7px; }
+.field span { color: #4f586e; font-size: 13px; font-weight: 650; }
+.field input,
+.field select {
+  width: 100%;
+  height: 42px;
+  border: 1px solid #d9dfeb;
+  border-radius: 10px;
+  outline: 0;
+  padding: 0 12px;
+  color: var(--text);
+  background: #fff;
+}
+.field input:focus,
+.field select:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(93, 95, 239, .10); }
+.rules-tip { margin: 11px 0 0; color: #929bad; font-size: 11px; line-height: 1.55; }
 
 .drop-zone {
   display: flex;
@@ -179,7 +208,9 @@ button, input { font: inherit; }
   .app-shell { width: min(100% - 20px, 1180px); padding-top: 34px; }
   .hero { justify-content: flex-start; }
   .quota-main { align-items: flex-start; flex-direction: column; }
+  .rules-title { align-items: flex-start; flex-direction: column; gap: 5px; }
   .quota-details { flex-direction: column; }
+  .rules-grid { grid-template-columns: 1fr; }
   .drop-zone { min-height: 215px; }
   .toolbar { align-items: flex-start; flex-direction: column; }
   .toolbar-actions { width: 100%; }

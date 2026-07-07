@@ -21,20 +21,48 @@
       当前浏览器不支持直接修改本地文件。请使用最新版 Chrome 或 Edge 打开本网站。
     </section>
 
-    <section class="quota-card" aria-label="Workers AI 今日额度">
+    <section class="quota-card" aria-label="今日图片额度">
       <div class="quota-main">
         <div>
-          <span class="quota-eyebrow">今日免费额度（Cloudflare 官方用量累计）</span>
-          <strong><span id="quotaRemaining">--</span> <small>Neurons 剩余</small></strong>
+          <span class="quota-eyebrow">今日图片额度</span>
+          <strong><span id="quotaRemaining">--</span> <small>张剩余</small></strong>
         </div>
       </div>
       <div class="quota-track"><div id="quotaBar" class="quota-bar"></div></div>
       <div class="quota-details">
-        <span>已用约 <b id="quotaUsed">0</b> / 10,000</span>
-        <span>本浏览器今日成功识别 <b id="quotaImages">0</b> 张</span>
+        <span>已用 <b id="quotaUsed">0</b> / 1,000 张</span>
+        <span>本网站今日成功识别 <b id="quotaImages">0</b> 张</span>
         <span id="quotaReset">每日 UTC 00:00 重置</span>
       </div>
-      <p class="quota-note" id="quotaNote">正在从 Cloudflare 服务器同步今日用量…</p>
+      <p class="quota-note" id="quotaNote">正在从 Cloudflare 服务器同步今日识图张数…</p>
+    </section>
+
+    <section class="rules-card" aria-label="命名规则设置">
+      <div class="rules-title">
+        <h2>命名规则</h2>
+        <p>识别前先设置规则。AI 会尽量按你的要求生成，你也可以识别后再手动修改。</p>
+      </div>
+      <div class="rules-grid">
+        <label class="field">
+          <span>文件名最多字数</span>
+          <input id="nameLength" type="number" min="2" max="30" step="1" value="8" />
+        </label>
+        <label class="field">
+          <span>是否允许符号</span>
+          <select id="allowSymbols">
+            <option value="no" selected>不允许符号</option>
+            <option value="yes">允许少量符号</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>是否允许英文</span>
+          <select id="allowEnglish">
+            <option value="no" selected>不要英文</option>
+            <option value="yes">允许英文</option>
+          </select>
+        </label>
+      </div>
+      <p class="rules-tip">说明：设置会用于后续识别，并立即清理当前名称；扩展名不计算在字数内。</p>
     </section>
 
     <section id="folderPicker" class="drop-zone" tabindex="0" role="button" aria-label="选择图片文件夹">
