@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="description" content="上传图片，自动识别内容并批量改名。" />
+  <meta name="description" content="选择图片文件夹，AI 识别后直接批量改名本地原文件。" />
   <title>识图改名</title>
   <link rel="stylesheet" href="/style.css" />
 </head>
@@ -13,27 +13,39 @@
       <div class="brand-mark" aria-hidden="true">名</div>
       <div>
         <h1>识图改名</h1>
-        <p>上传图片，AI 自动识别内容并生成文件名。</p>
+        <p>选择文件夹，AI 识别后直接改名原图片，不用下载。</p>
       </div>
     </header>
 
-    <section id="dropZone" class="drop-zone" tabindex="0" role="button" aria-label="选择或拖入图片">
-      <input id="fileInput" type="file" accept="image/jpeg,image/png,image/webp" multiple hidden />
+    <section id="unsupported" class="unsupported hidden">
+      当前浏览器不支持直接修改本地文件。请使用最新版 Chrome 或 Edge 打开本网站。
+    </section>
+
+    <section id="folderPicker" class="drop-zone" tabindex="0" role="button" aria-label="选择图片文件夹">
       <div class="upload-icon" aria-hidden="true">
-        <svg viewBox="0 0 24 24" width="34" height="34"><path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5M5 15.5v2A2.5 2.5 0 0 0 7.5 20h9a2.5 2.5 0 0 0 2.5-2.5v-2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <svg viewBox="0 0 24 24" width="34" height="34"><path d="M3.5 7.5A2.5 2.5 0 0 1 6 5h4l2 2h6A2.5 2.5 0 0 1 20.5 9.5v7A2.5 2.5 0 0 1 18 19H6a2.5 2.5 0 0 1-2.5-2.5v-9Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M12 10v6m0-6-2.5 2.5M12 10l2.5 2.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </div>
-      <strong>点击选择或拖入图片</strong>
-      <span>支持 JPG、PNG、WEBP，单次最多 30 张</span>
+      <strong>点击选择图片文件夹</strong>
+      <span>支持 JPG、PNG、WEBP，最多读取 500 张</span>
+      <small>浏览器会询问读写权限；图片只用于识别，不会存到网站。</small>
     </section>
 
     <section id="workspace" class="workspace hidden" aria-live="polite">
       <div class="toolbar">
-        <div class="summary"><b id="fileCount">0</b> 张图片</div>
-        <div class="toolbar-actions">
-          <button id="clearBtn" class="button ghost" type="button">清空</button>
-          <button id="recognizeBtn" class="button primary" type="button">开始识图改名</button>
-          <button id="downloadBtn" class="button success" type="button" disabled>下载全部</button>
+        <div>
+          <div class="summary"><b id="fileCount">0</b> 张图片</div>
+          <div id="folderName" class="folder-name"></div>
         </div>
+        <div class="toolbar-actions">
+          <button id="changeFolderBtn" class="button ghost" type="button">换文件夹</button>
+          <button id="recognizeBtn" class="button primary" type="button">开始识图改名</button>
+          <button id="renameBtn" class="button success" type="button" disabled>直接改名原文件</button>
+        </div>
+      </div>
+
+      <div class="progress-wrap">
+        <div class="progress-track"><div id="progressBar" class="progress-bar"></div></div>
+        <div id="progressText" class="progress-text">等待开始</div>
       </div>
 
       <div id="globalMessage" class="global-message hidden"></div>
@@ -43,9 +55,10 @@
 
   <template id="rowTemplate">
     <article class="file-row">
-      <img class="thumb" alt="图片预览" />
+      <img class="thumb" alt="图片预览" loading="lazy" decoding="async" />
       <div class="file-meta">
         <div class="original-name"></div>
+        <div class="file-path"></div>
         <div class="file-size"></div>
       </div>
       <div class="rename-field">
@@ -56,11 +69,10 @@
         </div>
         <div class="row-status">等待识别</div>
       </div>
-      <button class="remove-btn" type="button" aria-label="删除这张图片">×</button>
+      <button class="remove-btn" type="button" aria-label="从列表移除">×</button>
     </article>
   </template>
 
-  <script src="/vendor/jszip.min.js"></script>
   <script type="module" src="/app.js"></script>
 </body>
 </html>
