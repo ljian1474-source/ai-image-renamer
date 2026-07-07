@@ -301,7 +301,7 @@ function sanitizeStem(value, options = {}) {
     ?.replace(/^\s*(文件名|名称|命名)\s*[:：]\s*/i, "")
     .replace(/^[-–—•\d.、\s]+/, "")
     .replace(/["'“”‘’`]/g, "")
-    .replace(/\.(jpe?g|png|webp|gif|bmp|avif|heic)$/i, "")
+    .replace(/\.(jpe?g|png|webp|tiff?|gif|bmp|avif|heic)$/i, "")
     .replace(/[\\/:*?<>|]/g, "")
     .replace(/[。！!，,；;：:]+$/g, "")
     .replace(/\s+/g, "")
