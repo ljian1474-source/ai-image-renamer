@@ -10,5 +10,19 @@
   "assets": {
     "directory": "./public",
     "binding": "ASSETS"
-  }
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "QUOTA_COUNTER",
+        "class_name": "QuotaCounter"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "quota-counter-v1",
+      "new_sqlite_classes": ["QuotaCounter"]
+    }
+  ]
 }
