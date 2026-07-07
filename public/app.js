@@ -2,7 +2,10 @@ const MAX_FILES = 500;
 const MAX_ORIGINAL_SIZE = 50 * 1024 * 1024;
 const RECOGNITION_CONCURRENCY = 3;
 const FREE_DAILY_IMAGES = 1000;
-const ALLOWED_EXTENSIONS = new Set(["jpg", "jpeg", "png", "webp"]);
+const ALLOWED_EXTENSIONS = new Set(["jpg", "jpeg", "png", "webp", "tif", "tiff"]);
+const TIFF_EXTENSIONS = new Set(["tif", "tiff"]);
+const MAX_TIFF_PIXELS = 80_000_000;
+const TIFF_PLACEHOLDER_URL = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160" viewBox="0 0 160 160"><rect width="160" height="160" rx="20" fill="#eef0ff"/><rect x="35" y="28" width="90" height="104" rx="12" fill="#fff" stroke="#6670f0" stroke-width="5"/><text x="80" y="88" text-anchor="middle" font-family="Arial,sans-serif" font-weight="700" font-size="25" fill="#5962df">TIF</text></svg>`)}`;
 
 const state = {
   rootHandle: null,
@@ -155,7 +158,7 @@ async function chooseFolder() {
     state.items = found;
 
     if (found.length === 0) {
-      showGlobalMessage("这个文件夹里没有读取到 JPG、PNG 或 WEBP 图片。");
+      showGlobalMessage("这个文件夹里没有读取到 JPG、PNG、WEBP、TIF 或 TIFF 图片。");
       progressText.textContent = "未找到图片";
     } else {
       progressText.textContent = `已读取 ${found.length} 张，等待识别`;
@@ -195,7 +198,9 @@ async function scanDirectory(directoryHandle, relativePath, output) {
         relativePath,
         originalName: name,
         extension: extension === "jpeg" ? "jpg" : extension,
-        previewUrl: URL.createObjectURL(file),
+        previewUrl: isTiffExtension(extension) ? TIFF_PLACEHOLDER_URL : URL.createObjectURL(file),
+        previewIsObjectUrl: !isTiffExtension(extension),
+        thumbnailPromise: null,
         name: "",
         status: "idle",
         error: "",
@@ -227,6 +232,7 @@ function render() {
 
     row.dataset.id = item.id;
     thumb.src = item.previewUrl;
+    if (isTiffExtension(item.extension)) void ensureTiffThumbnail(item, thumb);
     originalName.textContent = item.originalName;
     originalName.title = item.originalName;
     filePath.textContent = item.relativePath || "当前文件夹";
@@ -499,6 +505,11 @@ function pathKey(relativePath) {
 }
 
 async function makeAiPreview(file) {
+  if (isTiffFile(file)) {
+    const canvas = await decodeTiffToCanvas(file, 1600);
+    return canvas.toDataURL("image/jpeg", 0.72);
+  }
+
   const bitmap = await createImageBitmap(file);
   const maxSide = 1600;
   const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
@@ -513,6 +524,106 @@ async function makeAiPreview(file) {
   context.drawImage(bitmap, 0, 0, width, height);
   bitmap.close();
   return canvas.toDataURL("image/jpeg", 0.72);
+}
+
+async function ensureTiffThumbnail(item, imageElement) {
+  if (!isTiffExtension(item.extension)) return;
+
+  if (!item.thumbnailPromise) {
+    item.thumbnailPromise = (async () => {
+      const canvas = await decodeTiffToCanvas(item.file, 220);
+      const blob = await canvasToBlob(canvas, "image/jpeg", 0.78);
+      const url = URL.createObjectURL(blob);
+      if (item.previewIsObjectUrl && item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+      item.previewUrl = url;
+      item.previewIsObjectUrl = true;
+      return url;
+    })().catch((error) => {
+      item.thumbnailPromise = null;
+      throw error;
+    });
+  }
+
+  try {
+    const url = await item.thumbnailPromise;
+    if (imageElement?.isConnected) imageElement.src = url;
+  } catch (error) {
+    if (imageElement?.isConnected) {
+      imageElement.src = TIFF_PLACEHOLDER_URL;
+      imageElement.title = `TIF 预览失败：${friendlyError(error)}`;
+    }
+  }
+}
+
+async function decodeTiffToCanvas(file, maxSide) {
+  if (!globalThis.UTIF) throw new Error("TIF 解码组件没有加载，请强制刷新网页后重试");
+
+  const buffer = await file.arrayBuffer();
+  const ifds = globalThis.UTIF.decode(buffer);
+  if (!Array.isArray(ifds) || ifds.length === 0) throw new Error("无法读取这个 TIF/TIFF 文件");
+
+  const candidates = [...ifds];
+  if (Array.isArray(ifds[0]?.subIFD)) candidates.push(...ifds[0].subIFD);
+  let page = null;
+  let largestArea = 0;
+
+  for (const candidate of candidates) {
+    const width = Number(candidate?.t256?.[0]) || 0;
+    const height = Number(candidate?.t257?.[0]) || 0;
+    const area = width * height;
+    if (area > largestArea) {
+      page = candidate;
+      largestArea = area;
+    }
+  }
+
+  if (!page || largestArea <= 0) throw new Error("TIF/TIFF 中没有可识别的图片页面");
+  if (largestArea > MAX_TIFF_PIXELS) throw new Error("TIF/TIFF 图片像素过大，请先缩小后再识别");
+
+  globalThis.UTIF.decodeImage(buffer, page, ifds);
+  const width = Number(page.width) || Number(page.t256?.[0]) || 0;
+  const height = Number(page.height) || Number(page.t257?.[0]) || 0;
+  if (!width || !height) throw new Error("无法获取 TIF/TIFF 图片尺寸");
+
+  const rgba = globalThis.UTIF.toRGBA8(page);
+  const sourceCanvas = document.createElement("canvas");
+  sourceCanvas.width = width;
+  sourceCanvas.height = height;
+  const sourceContext = sourceCanvas.getContext("2d", { alpha: true });
+  const pixels = new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, rgba.byteLength);
+  sourceContext.putImageData(new ImageData(pixels, width, height), 0, 0);
+
+  const scale = Math.min(1, maxSide / Math.max(width, height));
+  const outputWidth = Math.max(1, Math.round(width * scale));
+  const outputHeight = Math.max(1, Math.round(height * scale));
+  const outputCanvas = document.createElement("canvas");
+  outputCanvas.width = outputWidth;
+  outputCanvas.height = outputHeight;
+  const outputContext = outputCanvas.getContext("2d", { alpha: false });
+  outputContext.fillStyle = "#ffffff";
+  outputContext.fillRect(0, 0, outputWidth, outputHeight);
+  outputContext.drawImage(sourceCanvas, 0, 0, outputWidth, outputHeight);
+
+  sourceCanvas.width = 1;
+  sourceCanvas.height = 1;
+  return outputCanvas;
+}
+
+function canvasToBlob(canvas, type, quality) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob);
+      else reject(new Error("图片预览转换失败"));
+    }, type, quality);
+  });
+}
+
+function isTiffFile(file) {
+  return isTiffExtension(getExtensionFromName(file?.name || ""));
+}
+
+function isTiffExtension(extension) {
+  return TIFF_EXTENSIONS.has(String(extension || "").toLowerCase());
 }
 
 async function fetchWithRetry(url, options) {
@@ -670,13 +781,15 @@ function removeItem(id) {
   if (state.recognizing || state.renaming) return;
   const index = state.items.findIndex((item) => item.id === id);
   if (index === -1) return;
-  URL.revokeObjectURL(state.items[index].previewUrl);
+  if (state.items[index].previewIsObjectUrl) URL.revokeObjectURL(state.items[index].previewUrl);
   state.items.splice(index, 1);
   render();
 }
 
 function clearState() {
-  for (const item of state.items) URL.revokeObjectURL(item.previewUrl);
+  for (const item of state.items) {
+    if (item.previewIsObjectUrl) URL.revokeObjectURL(item.previewUrl);
+  }
   state.items = [];
   state.rootHandle = null;
   state.completed = 0;
@@ -688,7 +801,7 @@ function clearState() {
 function sanitizeStem(value) {
   return String(value || "")
     .replace(/[\/:*?"<>|]/g, "")
-    .replace(/\.(jpe?g|png|webp)$/i, "")
+    .replace(/\.(jpe?g|png|webp|tiff?)$/i, "")
     .replace(/[.\s]+$/g, "")
     .replace(/^\s+/g, "")
     .slice(0, 60);

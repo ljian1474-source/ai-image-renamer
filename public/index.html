@@ -74,7 +74,7 @@
         <svg viewBox="0 0 24 24" width="34" height="34"><path d="M3.5 7.5A2.5 2.5 0 0 1 6 5h4l2 2h6A2.5 2.5 0 0 1 20.5 9.5v7A2.5 2.5 0 0 1 18 19H6a2.5 2.5 0 0 1-2.5-2.5v-9Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M12 10v6m0-6-2.5 2.5M12 10l2.5 2.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </div>
       <strong>点击选择图片文件夹</strong>
-      <span>支持 JPG、PNG、WEBP，最多读取 500 张</span>
+      <span>支持 JPG、PNG、WEBP、TIF、TIFF，最多读取 500 张</span>
       <small>浏览器会询问读写权限；图片只用于识别，不会存到网站。</small>
     </section>
 
@@ -121,6 +121,8 @@
     </article>
   </template>
 
+  <script src="/pako_inflate.min.js"></script>
+  <script src="/utif.js"></script>
   <script type="module" src="/app.js"></script>
 </body>
 </html>
