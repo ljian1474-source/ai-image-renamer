@@ -31,7 +31,8 @@ const quotaImages = document.querySelector("#quotaImages");
 const quotaBar = document.querySelector("#quotaBar");
 const quotaReset = document.querySelector("#quotaReset");
 const quotaNote = document.querySelector("#quotaNote");
-const nameLengthInput = document.querySelector("#nameLength");
+const nameMinLengthInput = document.querySelector("#nameMinLength");
+const nameMaxLengthInput = document.querySelector("#nameMaxLength");
 const allowSymbolsSelect = document.querySelector("#allowSymbols");
 const allowEnglishSelect = document.querySelector("#allowEnglish");
 
@@ -54,19 +55,29 @@ folderPicker.addEventListener("keydown", (event) => {
 changeFolderBtn.addEventListener("click", chooseFolder);
 recognizeBtn.addEventListener("click", recognizeAll);
 renameBtn.addEventListener("click", renameOriginalFiles);
-nameLengthInput.addEventListener("input", handleRuleChange);
+nameMinLengthInput.addEventListener("change", () => handleRuleChange("min"));
+nameMaxLengthInput.addEventListener("change", () => handleRuleChange("max"));
 allowSymbolsSelect.addEventListener("change", handleRuleChange);
 allowEnglishSelect.addEventListener("change", handleRuleChange);
 restoreRuleInputs();
 normalizeRuleInputs();
 
-function normalizeRuleInputs() {
-  const value = Number(nameLengthInput.value);
-  const safe = Number.isFinite(value) ? Math.max(2, Math.min(30, Math.trunc(value))) : 8;
-  if (String(safe) !== nameLengthInput.value) nameLengthInput.value = String(safe);
+function normalizeRuleInputs(changed = "") {
+  let minLength = clampLength(nameMinLengthInput.value, 4);
+  let maxLength = clampLength(nameMaxLengthInput.value, 8);
+
+  if (minLength > maxLength) {
+    if (changed === "max") minLength = maxLength;
+    else maxLength = minLength;
+  }
+
+  nameMinLengthInput.value = String(minLength);
+  nameMaxLengthInput.value = String(maxLength);
+
   try {
     localStorage.setItem("ai-renamer-rules", JSON.stringify({
-      nameLength: safe,
+      minLength,
+      maxLength,
       allowSymbols: allowSymbolsSelect.value,
       allowEnglish: allowEnglishSelect.value,
     }));
@@ -79,7 +90,10 @@ function restoreRuleInputs() {
   try {
     const saved = JSON.parse(localStorage.getItem("ai-renamer-rules") || "null");
     if (!saved) return;
-    if (Number.isFinite(Number(saved.nameLength))) nameLengthInput.value = String(saved.nameLength);
+    const legacyMax = Number.isFinite(Number(saved.nameLength)) ? Number(saved.nameLength) : null;
+    if (Number.isFinite(Number(saved.minLength))) nameMinLengthInput.value = String(saved.minLength);
+    if (Number.isFinite(Number(saved.maxLength))) nameMaxLengthInput.value = String(saved.maxLength);
+    else if (legacyMax !== null) nameMaxLengthInput.value = String(legacyMax);
     if (["yes", "no"].includes(saved.allowSymbols)) allowSymbolsSelect.value = saved.allowSymbols;
     if (["yes", "no"].includes(saved.allowEnglish)) allowEnglishSelect.value = saved.allowEnglish;
   } catch {
@@ -90,14 +104,20 @@ function restoreRuleInputs() {
 function getNamingRules() {
   normalizeRuleInputs();
   return {
-    nameLength: Math.max(2, Math.min(30, Math.trunc(Number(nameLengthInput.value) || 8))),
+    minLength: clampLength(nameMinLengthInput.value, 4),
+    maxLength: clampLength(nameMaxLengthInput.value, 8),
     allowSymbols: allowSymbolsSelect.value === "yes",
     allowEnglish: allowEnglishSelect.value === "yes",
   };
 }
 
-function handleRuleChange() {
-  normalizeRuleInputs();
+function clampLength(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(2, Math.min(30, Math.trunc(number))) : fallback;
+}
+
+function handleRuleChange(changed = "") {
+  normalizeRuleInputs(changed);
   const rules = getNamingRules();
   for (const item of state.items) {
     if (item.status === "renamed" || !item.name) continue;
@@ -212,7 +232,7 @@ function render() {
     filePath.textContent = item.relativePath || "当前文件夹";
     fileSize.textContent = formatBytes(item.file.size);
     input.value = item.name;
-    input.maxLength = getNamingRules().nameLength;
+    input.maxLength = getNamingRules().maxLength;
     input.disabled = item.status === "loading" || state.renaming || item.status === "renamed";
     extension.textContent = `.${item.extension}`;
     applyStatus(status, item);
@@ -220,6 +240,7 @@ function render() {
     input.addEventListener("input", (event) => {
       item.name = sanitizeStemByRules(event.target.value, getNamingRules());
       if (event.target.value !== item.name) event.target.value = item.name;
+      applyStatus(status, item);
       updateButtons();
     });
 
@@ -239,7 +260,7 @@ function updateRow(item) {
   const originalName = row.querySelector(".original-name");
 
   input.value = item.name;
-  input.maxLength = getNamingRules().nameLength;
+  input.maxLength = getNamingRules().maxLength;
   input.disabled = item.status === "loading" || state.renaming || item.status === "renamed";
   originalName.textContent = item.originalName;
   originalName.title = item.originalName;
@@ -252,8 +273,15 @@ function applyStatus(element, item) {
     element.textContent = "正在识别…";
     element.className = "row-status loading";
   } else if (item.status === "success") {
-    element.textContent = "识别完成，可手动修改";
-    element.className = "row-status success";
+    const rules = getNamingRules();
+    const count = countNameCharacters(item.name);
+    if (!isNameWithinRules(item.name, rules)) {
+      element.textContent = `名称需 ${rules.minLength}-${rules.maxLength} 字，当前 ${count} 字`;
+      element.className = "row-status error";
+    } else {
+      element.textContent = `识别完成，当前 ${count} 字，可手动修改`;
+      element.className = "row-status success";
+    }
   } else if (item.status === "renaming") {
     element.textContent = "正在直接改名…";
     element.className = "row-status loading";
@@ -272,8 +300,11 @@ function applyStatus(element, item) {
 function updateButtons() {
   const hasItems = state.items.length > 0;
   const activeRules = getNamingRules();
-  const readyToRename = state.items.some(
-    (item) => sanitizeStemByRules(item.name, activeRules) && item.status !== "renamed" && item.status !== "loading",
+  const pendingItems = state.items.filter(
+    (item) => item.status !== "renamed" && item.status !== "loading" && item.status !== "renaming",
+  );
+  const readyToRename = pendingItems.length > 0 && pendingItems.every(
+    (item) => isNameWithinRules(item.name, activeRules),
   );
 
   recognizeBtn.disabled = !hasItems || state.recognizing || state.renaming;
@@ -296,7 +327,7 @@ async function recognizeAll() {
   state.recognizing = true;
 
   const queue = state.items.filter(
-    (item) => item.status !== "renamed" && (item.status === "idle" || item.status === "error" || !sanitizeStemByRules(item.name, rules)),
+    (item) => item.status !== "renamed" && (item.status === "idle" || item.status === "error" || !isNameWithinRules(item.name, rules)),
   );
   if (queue.length === 0) {
     state.recognizing = false;
@@ -347,7 +378,10 @@ async function recognizeAll() {
           throw error;
         }
 
-        item.name = sanitizeStemByRules(data.name, rules) || fallbackStem(rules);
+        item.name = sanitizeStemByRules(data.name, rules);
+        if (!isNameWithinRules(item.name, rules)) {
+          throw new Error(`AI生成的名称未达到 ${rules.minLength}-${rules.maxLength} 字，请重试`);
+        }
         item.status = "success";
         successCount += 1;
       } catch (error) {
@@ -501,7 +535,7 @@ async function renameOriginalFiles() {
 
   const activeRules = getNamingRules();
   const candidates = state.items.filter(
-    (item) => sanitizeStemByRules(item.name, activeRules) && item.status !== "renamed",
+    (item) => isNameWithinRules(item.name, activeRules) && item.status !== "renamed",
   );
   if (!candidates.length) return;
 
@@ -540,7 +574,7 @@ async function renameOriginalFiles() {
         if (!permission) throw new Error("文件夹写入权限已失效，请重新选择文件夹");
 
         const usedNames = usedByDirectory.get(pathKey(item.relativePath));
-        const stem = sanitizeStemByRules(item.name, activeRules) || fallbackStem(activeRules);
+        const stem = sanitizeStemByRules(item.name, activeRules);
         const desired = `${stem}.${item.extension}`;
         const finalName = chooseUniqueFilename(desired, item.originalName, usedNames);
 
@@ -668,11 +702,17 @@ function sanitizeStemByRules(value, rules = getNamingRules()) {
   } else {
     text = text.replace(/[^\u3400-\u9fffA-Za-z0-9]/g, "");
   }
-  return Array.from(text).slice(0, rules.nameLength).join("");
+  return Array.from(text).slice(0, rules.maxLength).join("");
 }
 
-function fallbackStem(rules = getNamingRules()) {
-  return sanitizeStemByRules("未命名图片", rules) || "图片";
+function countNameCharacters(value) {
+  return Array.from(String(value || "")).length;
+}
+
+function isNameWithinRules(value, rules = getNamingRules()) {
+  const cleaned = sanitizeStemByRules(value, rules);
+  const length = countNameCharacters(cleaned);
+  return Boolean(cleaned) && length >= rules.minLength && length <= rules.maxLength;
 }
 
 function getExtensionFromName(name) {

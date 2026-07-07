@@ -95,7 +95,7 @@ button, input, select { font: inherit; }
 .rules-title { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; margin-bottom: 14px; }
 .rules-title h2 { margin: 0; font-size: 18px; }
 .rules-title p { margin: 0; color: var(--muted); font-size: 12px; }
-.rules-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.rules-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
 .field { display: grid; gap: 7px; }
 .field span { color: #4f586e; font-size: 13px; font-weight: 650; }
 .field input,

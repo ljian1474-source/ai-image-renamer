@@ -44,8 +44,12 @@
       </div>
       <div class="rules-grid">
         <label class="field">
+          <span>文件名最少字数</span>
+          <input id="nameMinLength" type="number" min="2" max="30" step="1" value="4" />
+        </label>
+        <label class="field">
           <span>文件名最多字数</span>
-          <input id="nameLength" type="number" min="2" max="30" step="1" value="8" />
+          <input id="nameMaxLength" type="number" min="2" max="30" step="1" value="8" />
         </label>
         <label class="field">
           <span>是否允许符号</span>
@@ -62,7 +66,7 @@
           </select>
         </label>
       </div>
-      <p class="rules-tip">说明：设置会用于后续识别，并立即清理当前名称；扩展名不计算在字数内。</p>
+      <p class="rules-tip">说明：AI 名称必须在最少与最多字数之间；手动修改时也必须符合范围，扩展名不计算在内。</p>
     </section>
 
     <section id="folderPicker" class="drop-zone" tabindex="0" role="button" aria-label="选择图片文件夹">
